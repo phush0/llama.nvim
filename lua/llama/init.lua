@@ -1,5 +1,6 @@
 -- llama.vim translated to lua for neovim
 -- Author: Gemini
+-- fixed by Dimitar Atanassov
 -- Date: 2025-08-18
 
 -- Module definition
