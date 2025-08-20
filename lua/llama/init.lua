@@ -63,8 +63,8 @@ function M.setup(user_config)
   M.config = vim.tbl_deep_extend("force", vim.deepcopy(default_config), user_config)
 
   -- Setup Highlights
-  vim.api.nvim_set_hl(0, M.config.hl_hint_group, { fg = '#ff772f', ctermfg = 202, default = true })
-  vim.api.nvim_set_hl(0, M.config.hl_info_group, { fg = '#77ff2f', ctermfg = 119, default = true })
+  vim.api.nvim_set_hl(0, M.config.hl_hint_group, { fg = '#ff772f', ctermfg = 202 })
+  vim.api.nvim_set_hl(0, M.config.hl_info_group, { fg = '#77ff2f', ctermfg = 119 })
 
   -- Setup Commands
   vim.api.nvim_create_user_command('LlamaEnable', M.init, {})
