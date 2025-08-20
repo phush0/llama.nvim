@@ -40,6 +40,12 @@ local default_config = {
   ring_chunk_size = 64,
   ring_scope = 1024,
   ring_update_ms = 1000,
+  ring_max_queued_chunks = 16,
+  ring_chunk_similarity_threshold = 0.9,
+  ring_eviction_similarity_threshold = 0.5,
+  ring_update_idle_s = 3.0,
+  fim_debounce_ms = 100,
+  fim_large_move_line_threshold = 32,
   keymap_trigger = "<C-F>",
   keymap_accept_full = "<Tab>",
   keymap_accept_line = "<S-Tab>",
@@ -169,7 +175,7 @@ local function pick_chunk(text, no_mod, do_evict)
 
   -- evict queued chunks that are very similar to the new one
   for i = #state.ring_queued, 1, -1 do
-    if chunk_sim(state.ring_queued[i].data, chunk) > 0.9 then
+    if chunk_sim(state.ring_queued[i].data, chunk) > M.config.ring_chunk_similarity_threshold then
       if do_evict then
         table.remove(state.ring_queued, i)
         state.ring_n_evict = state.ring_n_evict + 1
@@ -181,7 +187,7 @@ local function pick_chunk(text, no_mod, do_evict)
 
   -- also from s:ring_chunks
   for i = #state.ring_chunks, 1, -1 do
-    if chunk_sim(state.ring_chunks[i].data, chunk) > 0.9 then
+    if chunk_sim(state.ring_chunks[i].data, chunk) > M.config.ring_chunk_similarity_threshold then
       if do_evict then
         table.remove(state.ring_chunks, i)
         state.ring_n_evict = state.ring_n_evict + 1
@@ -192,7 +198,7 @@ local function pick_chunk(text, no_mod, do_evict)
   end
 
   -- if the queue is full, remove the oldest item
-  if #state.ring_queued >= 16 then
+  if #state.ring_queued >= M.config.ring_max_queued_chunks then
     table.remove(state.ring_queued, 1)
   end
 
@@ -200,13 +206,13 @@ local function pick_chunk(text, no_mod, do_evict)
     data = chunk,
     str = chunk_str,
     time = vim.fn.reltime(),
-    filename = vim.fn.expand('%')
+    filename = vim.api.nvim_buf_get_name(0)
   })
 end
 
 local function ring_update()
   -- update only if in normal mode or if the cursor hasn't moved for a while
-  if vim.fn.mode() ~= 'n' and state.t_last_move and vim.fn.reltimefloat(vim.fn.reltime(state.t_last_move)) < 3.0 then
+  if vim.api.nvim_get_mode().mode ~= 'n' and state.t_last_move and vim.fn.reltimefloat(vim.fn.reltime(state.t_last_move)) < M.config.ring_update_idle_s then
     return
   end
 
@@ -402,7 +408,7 @@ function M.fim(pos_x, pos_y, is_auto, prev, use_cache)
 
     if state.current_job then
         if state.timer_fim then state.timer_fim:stop() end
-        state.timer_fim = vim.defer_fn(function() M.fim(pos_x, pos_y, is_auto, prev, use_cache) end, 100)
+        state.timer_fim = vim.defer_fn(function() M.fim(pos_x, pos_y, is_auto, prev, use_cache) end, M.config.fim_debounce_ms)
         return
     end
 
@@ -418,7 +424,7 @@ function M.fim(pos_x, pos_y, is_auto, prev, use_cache)
       local current_chunk_data = vim.api.nvim_buf_get_lines(0, start_line - 1, end_line, false)
 
       for i = #state.ring_chunks, 1, -1 do
-        if chunk_sim(state.ring_chunks[i].data, current_chunk_data) > 0.5 then
+        if chunk_sim(state.ring_chunks[i].data, current_chunk_data) > M.config.ring_eviction_similarity_threshold then
           table.remove(state.ring_chunks, i)
           state.ring_n_evict = state.ring_n_evict + 1
         end
@@ -480,7 +486,7 @@ function M.fim(pos_x, pos_y, is_auto, prev, use_cache)
       end
 
       local delta_y = math.abs(pos_y - vim.b.llama_last_pick_pos)
-      if delta_y > 32 then
+      if delta_y > M.config.fim_large_move_line_threshold then
         local max_y = vim.api.nvim_buf_line_count(0)
         -- expand the prefix even further
         local prefix_start = math.max(1, pos_y - M.config.ring_scope)
@@ -513,8 +519,8 @@ function M.fim_ctx_local(pos_x, pos_y, prev)
         if line_cur:match('^%s*$') then
             line_cur_prefix, line_cur_suffix, indent = "", "", 0
         else
-            line_cur_prefix = vim.fn.strpart(line_cur, 0, pos_x)
-            line_cur_suffix = vim.fn.strpart(line_cur, pos_x)
+            line_cur_prefix = line_cur:sub(1, pos_x)
+            line_cur_suffix = line_cur:sub(pos_x + 1)
             indent = #(line_cur:match('^%s*'))
         end
         lines_prefix = vim.api.nvim_buf_get_lines(bufnr, math.max(1, pos_y - M.config.n_prefix) - 1, pos_y - 1, false)
@@ -555,7 +561,7 @@ end
 
 --- Tries to find and show a hint from cache.
 function M.fim_try_hint(pos_x, pos_y)
-    if not vim.tbl_contains({'i', 'ic', 'ix'}, vim.fn.mode()) then return end
+    if not ({i=true, ic=true, ix=true})[vim.api.nvim_get_mode().mode] then return end
     local ctx = M.fim_ctx_local(pos_x, pos_y, {})
     local hash = vim.fn.sha256(ctx.prefix .. ctx.middle .. 'Î' .. ctx.suffix)
     local raw_response = cache_get(hash)
@@ -590,7 +596,9 @@ function M.fim_render(pos_x, pos_y, data)
   if not ok or not response.content or response.content == "" then return end
 
   local bufnr = vim.api.nvim_get_current_buf()
-  local line_cur = vim.api.nvim_buf_get_lines(bufnr, pos_y - 1, pos_y, true)[1]
+  local line_cur_tbl = vim.api.nvim_buf_get_lines(bufnr, pos_y - 1, pos_y, true)
+  if #line_cur_tbl == 0 then return end
+  local line_cur = line_cur_tbl[1]
   local line_cur_suffix = line_cur:sub(pos_x + 1)
 
   local content_lines = vim.split(response.content, "\n", { trimempty = false })
