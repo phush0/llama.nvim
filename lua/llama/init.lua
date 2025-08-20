@@ -3,6 +3,7 @@
 -- Date: 2025-08-18
 
 local M = {}
+local Job = require('plenary.job')
 
 -- State holds all the runtime variables for the plugin
 local state = {
@@ -252,18 +253,17 @@ local function ring_update()
     response_fields = {""},
   })
 
-  local curl_command = { "curl", "--silent", "--no-buffer", "--request", "POST", "--url", M.config.endpoint, "--header", "Content-Type: application/json", "--data", "@-" }
+  local args = { "--silent", "--no-buffer", "--request", "POST", "--url", M.config.endpoint, "--header", "Content-Type: application/json", "--data", "@-" }
   if M.config.api_key and M.config.api_key ~= "" then
-      table.insert(curl_command, "--header")
-      table.insert(curl_command, "Authorization: Bearer " .. M.config.api_key)
+      table.insert(args, "--header")
+      table.insert(args, "Authorization: Bearer " .. M.config.api_key)
   end
 
-  -- no callbacks because we don't need to process the response
-  local job_id = vim.fn.jobstart(curl_command)
-  if job_id and job_id > 0 then
-    vim.fn.chansend(job_id, request)
-    vim.fn.chanclose(job_id, 'stdin')
-  end
+  Job:new({
+    command = "curl",
+    args = args,
+    writer = request,
+  }):start()
 end
 
 local function on_move()
@@ -273,7 +273,7 @@ local function on_move()
   M.fim_try_hint(pos[2], pos[1])
 end
 
-local function fim_on_exit(job_id, exit_code, event)
+local function fim_on_exit(job, exit_code)
   if exit_code ~= 0 then
     vim.schedule(function()
       vim.notify("llama.nvim job failed with exit code: " .. exit_code, vim.log.levels.WARN)
@@ -282,7 +282,7 @@ local function fim_on_exit(job_id, exit_code, event)
   state.current_job = nil
 end
 
-local function fim_on_response(hashes, job_id, data, event)
+local function fim_on_response(hashes, _, data)
   local raw_data = table.concat(data, "\n")
   if raw_data == "" then return end
   if not (string.find(raw_data, "^%s*{") and string.find(raw_data, '"content"%s*:')) then return end
@@ -465,19 +465,26 @@ function M.fim(pos_x, pos_y, is_auto, prev, use_cache)
         t_max_predict_ms = (#(prev or {}) == 0) and 250 or M.config.t_max_predict_ms,
         response_fields = {"content", "timings/prompt_n", "timings/prompt_ms", "timings/prompt_per_second", "timings/predicted_n", "timings/predicted_ms", "timings/predicted_per_second", "truncated", "tokens_cached"},
     })
-    local curl_command = { "curl", "--silent", "--no-buffer", "--request", "POST", "--url", M.config.endpoint, "--header", "Content-Type: application/json", "--data", "@-" }
+    if state.current_job then state.current_job:shutdown() end
+
+    local args = { "--silent", "--no-buffer", "--request", "POST", "--url", M.config.endpoint, "--header", "Content-Type: application/json", "--data", "@-" }
     if M.config.api_key and M.config.api_key ~= "" then
-        table.insert(curl_command, "--header")
-        table.insert(curl_command, "Authorization: Bearer " .. M.config.api_key)
+        table.insert(args, "--header")
+        table.insert(args, "Authorization: Bearer " .. M.config.api_key)
     end
 
-    if state.current_job then vim.fn.jobstop(state.current_job) end
-    state.current_job = vim.fn.jobstart(curl_command, {
-        on_stdout = function(...) fim_on_response(hashes, ...) end,
-        on_exit = fim_on_exit, stdout_buffered = true,
+    state.current_job = Job:new({
+        command = "curl",
+        args = args,
+        writer = request,
+        on_exit = function(j, return_val)
+            if return_val == 0 then
+                fim_on_response(hashes, j, j:result())
+            end
+            fim_on_exit(j, return_val)
+        end,
     })
-    vim.fn.chansend(state.current_job, request)
-    vim.fn.chanclose(state.current_job, 'stdin')
+    state.current_job:start()
 
     -- Gather more context on large cursor movements
     if M.config.ring_n_chunks > 0 and is_auto then
