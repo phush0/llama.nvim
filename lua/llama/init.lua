@@ -485,8 +485,10 @@ Llama.init = function()
     vim.api.nvim_create_autocmd("TextYankPost", {
         group = augroup,
         pattern = "*",
-        callback = function(ev)
-            H.pick_chunk(ev.regcontents, false, true)
+        callback = function()
+            if vim.v.event.operator == "y" then
+                H.pick_chunk(vim.v.event.regcontents, false, true)
+            end
         end,
     })
 
