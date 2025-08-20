@@ -114,3 +114,8 @@ require("llama").setup({
   }
 })
 ```
+
+## Credits
+
+- Original implementation and translation to Lua by Google Gemini
+- Documentation improvements and fixes by Claude (Anthropic)
